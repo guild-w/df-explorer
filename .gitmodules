@@ -1,0 +1,6 @@
+[submodule "thirdparty/CGBN"]
+	path = thirdparty/CGBN
+	url = https://github.com/NVlabs/CGBN.git
+[submodule "thirdparty/workflow"]
+	path = thirdparty/workflow
+	url = https://github.com/sogou/workflow.git
