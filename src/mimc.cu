@@ -50,14 +50,6 @@ typedef struct {
 __constant__ cgbn_mem_t<BITS> g_device_p;
 __constant__ cgbn_mem_t<BITS> g_device_c[MimcConstants::rounds];
 
-__device__ void add_mod(env_t &bn_env, bn_t &r, const bn_t &a, const bn_t &b, const bn_t &p)
-{
-    cgbn_add(bn_env, r, a, b);
-    if (cgbn_compare(bn_env, r, p) == 1) {
-        cgbn_sub(bn_env, r, r, p);
-    }
-}
-
 __device__ void mix(env_t &bn_env, feistel_state_t &state)
 {
     bn_t bn_t_5, p, t, ci;
@@ -70,13 +62,14 @@ __device__ void mix(env_t &bn_env, feistel_state_t &state)
         cgbn_add(bn_env, t, t, ci);
         cgbn_modular_power(bn_env, t, t, bn_t_5, p);
 
-        add_mod(bn_env, t, t, state.r, p);
+        cgbn_add(bn_env, t, t, state.r);
         cgbn_set(bn_env, state.r, state.l);
-        cgbn_set(bn_env, state.l, t);
+        cgbn_rem(bn_env, state.l, t, p);
     }
     cgbn_add(bn_env, t, state.l, state.k);
     cgbn_modular_power(bn_env, t, t, bn_t_5, p);
-    add_mod(bn_env, state.r, t, state.r, p);
+    cgbn_add(bn_env, state.r, t, state.r);
+    cgbn_rem(bn_env, state.r, state.r, p);
 }
 
 __device__  void inject(env_t &bn_env, feistel_state_t &state, bn_t elt)
