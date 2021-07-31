@@ -82,7 +82,7 @@ int main()
     const int port = 8880;
     if (server.start(port) == 0) {  // start server on port 8888
         printf("start server on port %d\n", port);
-        getchar(); // press "Enter" to end.
+        wait_group.wait();
         server.stop();
     } else {
         perror("Cannot start server\n");

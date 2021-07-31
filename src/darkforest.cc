@@ -25,9 +25,9 @@ void darkforest::explore_chunk(const darkforest::ExploreTask &task, darkforest::
                       task.planetRarity,
                       hashes);
 
-    if (hashes.empty()) {
-        throw std::exception();
-    }
+//    if (hashes.empty()) {
+//        throw std::exception();
+//    }
 
      std::vector<darkforest::Planet> planets;
 
