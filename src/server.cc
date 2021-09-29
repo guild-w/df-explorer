@@ -75,7 +75,7 @@ int main()
     struct WFServerParams params = HTTP_SERVER_PARAMS_DEFAULT;
     params.request_size_limit = 16 * 1024;
 
-    WFHttpServer server(process);
+    WFHttpServer server(&params, process);
 
     signal(SIGINT, sig_handler);
 

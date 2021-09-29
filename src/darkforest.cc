@@ -25,22 +25,10 @@ void darkforest::explore_chunk(const darkforest::ExploreTask &task, darkforest::
                       task.planetRarity,
                       hashes);
 
-//    if (hashes.empty()) {
-//        throw std::exception();
-//    }
-
      std::vector<darkforest::Planet> planets;
 
      planets.reserve(hashes.size());
      for (auto & hash : hashes) {
-         std::vector<mpz_class> cpu_result;
-         cpu_mimc_sponge({hash.x, hash.y}, 1, task.planetHashKey, cpu_result);
-         if (cpu_result[0].get_str() != hash.hash) {
-             printf("results not match:\n");
-             printf("gpu result: x: %ld, y: %ld, hash: %s\n", hash.x, hash.y, hash.hash.c_str());
-             printf("cpu result: x: %ld, y: %ld, hash: %s\n", hash.x, hash.y, cpu_result[0].get_str().c_str());
-             throw std::exception();
-         }
          planets.push_back({hash.hash, hash.x, hash.y});
      }
 
@@ -50,7 +38,7 @@ void darkforest::explore_chunk(const darkforest::ExploreTask &task, darkforest::
 
 void init_device()
 {
-    init_device_constants();
+    init();
 }
 
 void clear_device()

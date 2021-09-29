@@ -15,7 +15,7 @@ typedef struct
 } location_hash_t;
 
 
-void init_device_constants();
+void init();
 
 int32_t get_block_size();
 

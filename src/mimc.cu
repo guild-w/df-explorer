@@ -20,13 +20,15 @@
 
 typedef cgbn_context_t<TPI> context_t;
 typedef cgbn_env_t<context_t, BITS> env_t;
+typedef cgbn_mem_t<BITS> bn_mem_t;
 typedef typename env_t::cgbn_t bn_t;
 
-typedef struct {
-    bn_t k;
-    bn_t l;
-    bn_t r;
-} feistel_state_t;
+template<typename T>
+struct feistel_state_t{
+    T k;
+    T l;
+    T r;
+} ;
 
 typedef struct {
     int64_t x;
@@ -37,7 +39,7 @@ typedef struct {
 } explore_in_t;
 
 typedef struct {
-    cgbn_mem_t<BITS> hash;
+    bn_mem_t hash;
     int64_t x;
     int64_t y;
 } explore_out_item_t;
@@ -47,8 +49,13 @@ typedef struct {
     uint32_t count;
 } explore_out_t;
 
-__constant__ cgbn_mem_t<BITS> g_device_p;
-__constant__ cgbn_mem_t<BITS> g_device_c[MimcConstants::rounds];
+
+namespace {
+
+    int32_t g_tpb = DEFAULT_TPB;
+    __constant__ bn_mem_t g_device_p;
+    __constant__ bn_mem_t g_device_c[MimcConstants::rounds];
+}
 
 __device__ void add_mod(env_t &bn_env, bn_t &r, const bn_t &a, const bn_t &b, const bn_t &modulus)
 {
@@ -58,7 +65,7 @@ __device__ void add_mod(env_t &bn_env, bn_t &r, const bn_t &a, const bn_t &b, co
     }
 }
 
-__device__ void mix(env_t &bn_env, feistel_state_t &state)
+__device__ void mix(env_t &bn_env, feistel_state_t<bn_t> &state)
 {
     bn_t bn_t_5, p, t, ci;
     cgbn_load(bn_env, p, &g_device_p);
@@ -79,35 +86,11 @@ __device__ void mix(env_t &bn_env, feistel_state_t &state)
     add_mod(bn_env, state.r, t, state.r, p);
 }
 
-__device__  void inject(env_t &bn_env, feistel_state_t &state, bn_t elt)
+__device__  void inject(env_t &bn_env, feistel_state_t<bn_t> &state, bn_t elt)
 {
     bn_t p;
     cgbn_load(bn_env, p, &g_device_p);
     add_mod(bn_env, state.l, state.l, elt, p);
-}
-
-__device__ void mimc_sponge(env_t &bn_env,
-                            const bn_t *inputs,
-                            uint32_t n_inputs,
-                            uint32_t key,
-                            bn_t *outputs,
-                            uint32_t n_outputs)
-{
-    feistel_state_t state;
-    cgbn_set_ui32(bn_env, state.l, 0);
-    cgbn_set_ui32(bn_env, state.r, 0);
-    cgbn_set_ui32(bn_env, state.k, key);
-
-    for (int32_t i = 0; i < n_inputs; ++i) {
-        inject(bn_env, state, inputs[i]);
-        mix(bn_env, state);
-    }
-
-    cgbn_set(bn_env, outputs[0], state.l);
-    for (int32_t i = 1; i < n_outputs; ++i) {
-        mix(bn_env, state);
-        cgbn_set(bn_env, outputs[i], state.l);
-    }
 }
 
 __device__ void coords_to_bn(env_t &bn_env, bn_t &r, int64_t num)
@@ -146,6 +129,7 @@ __device__  bool is_planet(env_t &bn_env, const bn_t &hash, uint32_t rarity)
 }
 
 __global__ void kernel_explore(const explore_in_t * __restrict__ explore_params,
+                               feistel_state_t<bn_mem_t> *states,
                                explore_out_t * __restrict__ explore_out,
                                uint32_t count)
 {
@@ -157,13 +141,20 @@ __global__ void kernel_explore(const explore_in_t * __restrict__ explore_params,
     context_t bn_context(cgbn_no_checks);
     env_t bn_env(bn_context.env<env_t>());
 
-    bn_t hash, inputs[2];
-    int64_t x = explore_params->x + (instance / explore_params->side_length);
+    bn_t hash, bn_y;
+    int64_t index_x = (instance / explore_params->side_length);
+    int64_t x = explore_params->x + index_x;
     int64_t y = explore_params->y + (instance % explore_params->side_length);
-    coords_to_bn(bn_env, inputs[0], x);
-    coords_to_bn(bn_env, inputs[1], y);
+    coords_to_bn(bn_env, bn_y, y);
 
-    mimc_sponge(bn_env, inputs, 2, explore_params->key, &hash, 1);
+    feistel_state_t<bn_t> state{};
+    cgbn_load(bn_env, state.l, &(states[index_x].l));
+    cgbn_load(bn_env, state.r,  &(states[index_x].r));
+    cgbn_set_ui32(bn_env, state.k, explore_params->key);
+
+    inject(bn_env, state, bn_y);
+    mix(bn_env, state);
+    cgbn_set(bn_env, hash, state.l);
 
     if (!is_planet(bn_env, hash, explore_params->rarity)) {
         return;
@@ -186,31 +177,65 @@ __global__ void kernel_explore(const explore_in_t * __restrict__ explore_params,
     cgbn_store(bn_env, &(explore_out->planets[i].hash), hash);
 }
 
-void init_device_constants()
+__global__ void kernel_absorb_x(const explore_in_t * explore_params, feistel_state_t<bn_mem_t> *result, uint32_t count)
 {
-    cgbn_mem_t<BITS> p;
-    cgbn_mem_t<BITS> c[MimcConstants::rounds];
+    uint32_t instance = (blockIdx.x * blockDim.x + threadIdx.x) / TPI;
+    if (instance >= count) {
+        return;
+    }
+
+    context_t bn_context(cgbn_no_checks);
+    env_t bn_env(bn_context.env<env_t>());
+
+    bn_t bn_x;
+    int64_t x = explore_params->x + instance;
+    coords_to_bn(bn_env, bn_x, x);
+
+    feistel_state_t<bn_t> state{};
+    cgbn_set_ui32(bn_env, state.l, 0);
+    cgbn_set_ui32(bn_env, state.r, 0);
+    cgbn_set_ui32(bn_env, state.k, explore_params->key);
+    inject(bn_env, state, bn_x);
+    mix(bn_env, state);
+
+    cgbn_store(bn_env, &(result[instance].l), state.l);
+    cgbn_store(bn_env, &(result[instance].r), state.r);
+}
+
+void init_device_constants(int32_t device_id)
+{
+    bn_mem_t p;
+    bn_mem_t c[MimcConstants::rounds];
     from_mpz(MimcConstants::get_p().get_mpz_t(), p._limbs, BITS / 32);
     for (int32_t i = 0; i < MimcConstants::rounds; ++i) {
         from_mpz(MimcConstants::c_at(i).get_mpz_t(), c[i]._limbs, BITS / 32);
     }
-    CUDA_CHECK(cudaSetDevice(0));
-    CUDA_CHECK(cudaMemcpyToSymbol(g_device_p, &p, sizeof(cgbn_mem_t<BITS>)));
-    CUDA_CHECK(cudaMemcpyToSymbol(g_device_c, c, sizeof(cgbn_mem_t<BITS>) * MimcConstants::rounds));
+    CUDA_CHECK(cudaSetDevice(device_id));
+    CUDA_CHECK(cudaMemcpyToSymbol(g_device_p, &p, sizeof(bn_mem_t)));
+    CUDA_CHECK(cudaMemcpyToSymbol(g_device_c, c, sizeof(bn_mem_t) * MimcConstants::rounds));
 }
 
- int32_t get_block_size()
+int32_t get_env_i32(const char *name, int32_t default_value=INT32_MAX)
 {
-    char *block_size_str;
-    block_size_str = getenv("MIMC_CUDA_BLOCK_SIZE");
-    if (block_size_str == NULL) {
-        return DEFAULT_TPB;
+    char *value_str;
+    value_str = getenv(name);
+    if (value_str == nullptr) {
+        return default_value;
     }
-    int32_t size = atoi(block_size_str);
-    if (size <= 0 || size > 1024) {
-        return DEFAULT_TPB;
+    return atoi(value_str);
+}
+
+void init() {
+    g_tpb = get_env_i32("MIMC_CUDA_BLOCK_SIZE", DEFAULT_TPB);
+    if (g_tpb <= 0 || g_tpb > 1024) {
+        g_tpb = DEFAULT_TPB;
     }
-    return size;
+    int32_t device_id = get_env_i32("MIMC_CUDA_DEVICE", 0);
+
+    printf("cuda block size: %d\n", g_tpb);
+    printf("cuda device id: %d\n", device_id);
+
+    init_device_constants(device_id);
 }
 
 void get_result(explore_out_t * cuda_result, std::vector<location_hash_t> &hashes)
@@ -229,6 +254,9 @@ void gpu_explore_chunk(int64_t bottom_left_x,
                        uint32_t rarity,
                        std::vector<location_hash_t> &hashes)
 {
+    uint32_t TPB = g_tpb;
+    uint32_t IPB = TPB / TPI; // IPB is instances per block
+
     explore_in_t in_params {
         .x = bottom_left_x,
         .y = bottom_left_y,
@@ -236,9 +264,16 @@ void gpu_explore_chunk(int64_t bottom_left_x,
         .key = key,
         .rarity = rarity
     };
+
     explore_in_t * gpu_in_params;
     CUDA_CHECK(cudaMalloc((void **)&gpu_in_params, sizeof(explore_in_t)));
     CUDA_CHECK(cudaMemcpy(gpu_in_params, &in_params, sizeof(explore_in_t), cudaMemcpyHostToDevice));
+
+    //count == side_length
+    feistel_state_t<bn_mem_t> *states;
+    CUDA_CHECK(cudaMalloc((void **)&states, sizeof(feistel_state_t<bn_mem_t>) * side_length));
+    kernel_absorb_x<<<(side_length + IPB - 1) / IPB, TPB>>>(gpu_in_params, states, side_length);
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     explore_out_t *out;
     CUDA_CHECK(cudaHostAlloc((void **)&out, sizeof(explore_out_t), cudaHostAllocDefault));
@@ -247,10 +282,8 @@ void gpu_explore_chunk(int64_t bottom_left_x,
     CUDA_CHECK(cudaMalloc((void **)&gpu_out, sizeof(explore_out_t)));
     CUDA_CHECK(cudaMemcpy(gpu_out, out, sizeof(explore_out_t), cudaMemcpyHostToDevice));
 
-    uint32_t TPB = get_block_size();
-    uint32_t IPB = TPB / TPI; // IPB is instances per block
     uint32_t count = side_length * side_length;
-    kernel_explore<<<(count + IPB - 1) / IPB, TPB, sizeof (uint32_t) * IPB>>>(gpu_in_params, gpu_out, count);
+    kernel_explore<<<(count + IPB - 1) / IPB, TPB, sizeof (uint32_t) * IPB>>>(gpu_in_params, states, gpu_out, count);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // copy the result back from gpuMemory
@@ -258,5 +291,6 @@ void gpu_explore_chunk(int64_t bottom_left_x,
     get_result(out, hashes);
 
     CUDA_CHECK(cudaFreeHost(out));
+    CUDA_CHECK(cudaFree(states));
     CUDA_CHECK(cudaFree(gpu_out));
 }
