@@ -15,8 +15,9 @@
 // IMPORTANT:  DO NOT DEFINE TPI OR BITS BEFORE INCLUDING CGBN
 #define TPI 8
 #define BITS 256
-#define DEFAULT_TPB 768
-#define MAX_CUDA_OUT 2000
+#define DEFAULT_TPB 128
+#define MAX_CUDA_OUT 4096
+#define MAX_IPB 256 // MAX_TPB / MIN_tpi 1024/4
 
 typedef cgbn_context_t<TPI> context_t;
 typedef cgbn_env_t<context_t, BITS> env_t;
@@ -160,7 +161,7 @@ __global__ void kernel_explore(const explore_in_t * __restrict__ explore_params,
         return;
     }
 
-    extern __shared__ uint32_t result_index[];
+    __shared__ uint32_t result_index[MAX_IPB];
     uint32_t ii = threadIdx.x / TPI;
     uint32_t group_thread = threadIdx.x & TPI-1;
     if (0 == group_thread) {
@@ -283,7 +284,7 @@ void gpu_explore_chunk(int64_t bottom_left_x,
     CUDA_CHECK(cudaMemcpy(gpu_out, out, sizeof(explore_out_t), cudaMemcpyHostToDevice));
 
     uint32_t count = side_length * side_length;
-    kernel_explore<<<(count + IPB - 1) / IPB, TPB, sizeof (uint32_t) * IPB>>>(gpu_in_params, states, gpu_out, count);
+    kernel_explore<<<(count + IPB - 1) / IPB, TPB>>>(gpu_in_params, states, gpu_out, count);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // copy the result back from gpuMemory
@@ -291,6 +292,7 @@ void gpu_explore_chunk(int64_t bottom_left_x,
     get_result(out, hashes);
 
     CUDA_CHECK(cudaFreeHost(out));
+    CUDA_CHECK(cudaFree(gpu_in_params));
     CUDA_CHECK(cudaFree(states));
     CUDA_CHECK(cudaFree(gpu_out));
 }
