@@ -6,18 +6,11 @@
 
 #include "workflow/WFHttpServer.h"
 #include "workflow/WFFacilities.h"
+#include "workflow/HttpUtil.h"
 #include "nlohmann/json.hpp"
 #include "darkforest.h"
 
 using json = nlohmann::json;
-
-
-std::string parse_body(WFHttpTask *server_task) {
-    const void *body;
-    size_t body_len;
-    server_task->get_req()->get_parsed_body(&body, &body_len);
-    return std::string((char *) body, body_len);
-}
 
 void cors_allow_any(WFHttpTask *server_task)
 {
@@ -46,7 +39,7 @@ void process(WFHttpTask *server_task) {
 
     cors_allow_any(server_task);
     if (method == "POST") {
-        auto body =parse_body(server_task);
+        auto body = protocol::HttpUtil::decode_chunked_body(server_task->get_req());
         try {
             darkforest::ExploreTask task = json::parse(parse_body(server_task));
             darkforest::ExploreResult result;
