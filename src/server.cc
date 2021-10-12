@@ -41,7 +41,7 @@ void process(WFHttpTask *server_task) {
     if (method == "POST") {
         auto body = protocol::HttpUtil::decode_chunked_body(server_task->get_req());
         try {
-            darkforest::ExploreTask task = json::parse(parse_body(server_task));
+            darkforest::ExploreTask task = json::parse(body);
             darkforest::ExploreResult result;
             darkforest::explore_chunk(task, result);
             json resp = result;
